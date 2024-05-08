@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "CalleeFunc": {
+      "commandName": "Project",
+      "commandLineArgs": "--port 7065",
+      "launchBrowser": false
+    }
+  }
+}
