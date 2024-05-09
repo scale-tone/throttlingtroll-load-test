@@ -33,12 +33,20 @@ var host = new HostBuilder()
                     {
                         UriPattern = reader["UriPattern"].ToString(),
 
-                        LimitMethod = new FixedWindowRateLimitMethod
+                        LimitMethod = new SlidingWindowRateLimitMethod
                         {
                             PermitLimit = (int)reader["PermitLimit"],
                             IntervalInSeconds = (int)reader["IntervalInSeconds"],
+                            NumOfBuckets = 3
                         }
                     };
+
+                    int maxDelayInSeconds = (int)reader["MaxDelayInSeconds"];
+
+                    if (maxDelayInSeconds > 0)
+                    {
+                        rule.MaxDelayInSeconds = maxDelayInSeconds;
+                    }
 
                     rules.Add(rule);
                 }
