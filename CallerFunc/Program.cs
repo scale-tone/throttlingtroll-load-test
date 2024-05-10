@@ -5,6 +5,7 @@ using Microsoft.Data.SqlClient;
 using ThrottlingTroll;
 using ThrottlingTroll.CounterStores.Redis;
 using StackExchange.Redis;
+using Microsoft.ApplicationInsights;
 
 var host = new HostBuilder()
     .ConfigureFunctionsWebApplication()
@@ -12,7 +13,7 @@ var host = new HostBuilder()
         services.AddApplicationInsightsTelemetryWorkerService();
         services.ConfigureFunctionsApplicationInsights();
 
-        services.AddHttpClient("my-throttled-httpclient").AddThrottlingTrollMessageHandler(options =>
+        services.AddHttpClient("my-throttled-httpclient").AddThrottlingTrollMessageHandler((serviceProvider, options) =>
         {
             string redisConnString = Environment.GetEnvironmentVariable("RedisConnString")!;
             if (!string.IsNullOrEmpty(redisConnString))
@@ -20,8 +21,24 @@ var host = new HostBuilder()
                 options.CounterStore = new RedisCounterStore(ConnectionMultiplexer.Connect(redisConnString));
             }
 
+            var getShouldRetryUntil = async () =>
+            {
+                using var conn = new SqlConnection(Environment.GetEnvironmentVariable("SqlConnString"));
+                conn.Open();
+
+                using var cmd = new SqlCommand("SELECT MAX(ShouldRetryUntil) FROM ThrottlingTrollEgress", conn);
+                var result = await cmd.ExecuteScalarAsync();
+                return (int)result!;
+            };
+            Task<int> shouldRetryUntilTask = getShouldRetryUntil();
+
+            var telemetryClient = new TelemetryClient();
+
             options.GetConfigFunc = async () =>
             {
+                // Just refreshing this task
+                shouldRetryUntilTask = getShouldRetryUntil();
+
                 using var conn = new SqlConnection(Environment.GetEnvironmentVariable("SqlConnString"));
                 conn.Open();
 
@@ -43,17 +60,6 @@ var host = new HostBuilder()
                         }
                     };
 
-                    int shouldRetryUntil = (int)reader["ShouldRetryUntil"];
-
-                    if (shouldRetryUntil > 0)
-                    {
-                        rule.ResponseFabric = async (checkResults, requestProxy, responseProxy, cancelToken) =>
-                        {
-                            var egressResponse = (IEgressHttpResponseProxy)responseProxy;
-                            egressResponse.ShouldRetry = egressResponse.RetryCount < shouldRetryUntil;
-                        };
-                    }
-
                     rules.Add(rule);
                 }
 
@@ -65,6 +71,19 @@ var host = new HostBuilder()
             };
 
             options.IntervalToReloadConfigInSeconds = 10;
+
+            options.ResponseFabric = async (checkResults, requestProxy, responseProxy, cancelToken) =>
+            {
+                int shouldRetryUntil = await shouldRetryUntilTask;
+                
+                var egressResponse = (IEgressHttpResponseProxy)responseProxy;
+                egressResponse.ShouldRetry = egressResponse.RetryCount < shouldRetryUntil;
+
+                if (egressResponse.ShouldRetry)
+                {
+                    telemetryClient.TrackMetric("CallerFuncHttpCallRetry", 1);
+                }
+            };
         });
 
 

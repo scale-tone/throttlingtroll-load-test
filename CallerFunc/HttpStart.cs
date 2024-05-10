@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.ApplicationInsights;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -44,7 +45,19 @@ namespace CallerFunc
 
                 for (int i = 0; i < numOfParallelRequests; i++)
                 {
-                    tasks.Add(client.GetAsync(endpointUrl));
+                    var sw = new Stopwatch();
+                    sw.Start();
+
+                    tasks.Add(client.GetAsync(endpointUrl).ContinueWith(t => {
+
+                        sw.Stop();
+                        this._telemetryClient.TrackMetric("CallerFuncHttpCallDuration", sw.ElapsedMilliseconds);
+
+                        if (t.IsCompletedSuccessfully)
+                        {
+                            this._telemetryClient.TrackMetric(t.Result.IsSuccessStatusCode ? "CallerFuncHttpCallSuccess" : "CallerFuncHttpCallFailure", 1);
+                        }
+                    }));
                 }
 
                 this._telemetryClient.TrackMetric("CallerFuncHttpCall", numOfParallelRequests);
